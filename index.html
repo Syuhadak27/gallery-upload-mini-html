@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Ultimate Gallery Unlimited</title>
+<style>
+body{margin:0;font-family:system-ui;background:#f3f4f6}
+.tabs{display:flex;background:#e5e7eb}
+.tabs button{flex:1;padding:12px;border:0;background:none;font-weight:600}
+.tabs .active{background:#fff;color:#2563eb}
+.tab{display:none;padding:16px}
+.tab.active{display:block}
+.card{background:#fff;padding:16px;border-radius:12px;max-width:900px;margin:auto}
+input,textarea{width:100%;margin:6px 0;padding:8px}
+button{border:0;border-radius:8px;padding:8px 12px;cursor:pointer;background:#2563eb;color:#fff}
+.progress{height:6px;background:#e5e7eb;border-radius:6px;overflow:hidden;margin-top:8px;display:none}
+.bar{height:100%;background:#2563eb;width:0%}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:10px}
+.folder{background:#fff;padding:14px;border-radius:10px;font-weight:700;cursor:pointer}
+.item{background:#fff;padding:6px;border-radius:10px}
+.item img{width:100%;border-radius:8px}
+.topbar{display:flex;gap:6px;margin-bottom:10px;flex-wrap:wrap}
+</style>
+</head>
+<body>
+
+<div class="tabs">
+<button class="active" data-tab="input">Upload</button>
+<button data-tab="lihat">Galeri</button>
+</div>
+
+<div id="input" class="tab active">
+<div class="card">
+<input type="file" id="files" multiple accept="image/*">
+<input id="folder" placeholder="Nama folder (opsional)">
+<textarea id="caption" placeholder="Caption (opsional)"></textarea>
+<button id="upload">Upload</button>
+<div class="progress" id="prog"><div class="bar" id="bar"></div></div>
+</div>
+</div>
+
+<div id="lihat" class="tab">
+<div class="topbar">
+<button id="back" style="display:none">⬅️</button>
+<button id="delFolder" style="display:none;background:#ef4444">🗑️ Hapus Folder</button>
+</div>
+<div id="gallery"></div>
+</div>
+
+<script>
+let db;
+const request=indexedDB.open("galleryDB",1);
+
+request.onupgradeneeded=e=>{
+db=e.target.result;
+db.createObjectStore("images",{keyPath:"id"});
+};
+
+request.onsuccess=e=>db=e.target.result;
+
+const $=s=>document.querySelector(s);
+const $$=s=>document.querySelectorAll(s);
+let currentFolder=null;
+
+$$(".tabs button").forEach(b=>b.onclick=()=>{
+$$(".tabs button").forEach(x=>x.classList.remove("active"));
+b.classList.add("active");
+$$(".tab").forEach(t=>t.classList.remove("active"));
+$("#"+b.dataset.tab).classList.add("active");
+if(b.dataset.tab==="lihat") showFolders();
+});
+
+$("#upload").onclick=async()=>{
+const files=$("#files").files;
+if(!files.length)return alert("Pilih gambar");
+
+let folder=$("#folder").value.trim();
+if(folder){
+const d=new Date();
+folder+=String(d.getDate()).padStart(2,"0")
++String(d.getMonth()+1).padStart(2,"0")
++String(d.getFullYear()).slice(-2);
+}else folder="Tanpa Folder";
+
+$("#prog").style.display="block";
+let bar=$("#bar");
+
+for(let i=0;i<files.length;i++){
+const blob=await resize(files[i]);
+await saveImage({
+id:Date.now()+Math.random(),
+caption:$("#caption").value,
+blob,
+folder
+});
+bar.style.width=((i+1)/files.length*100)+"%";
+}
+
+setTimeout(()=>{$("#prog").style.display="none";bar.style.width="0%"},400);
+alert("Upload berhasil ✅");
+};
+
+function resize(file){
+return new Promise(res=>{
+const img=new Image(),r=new FileReader();
+r.onload=e=>img.src=e.target.result;
+img.onload=()=>{
+const max=1920;
+let w=img.width,h=img.height;
+if(w>max){h=h*(max/w);w=max}
+const c=document.createElement("canvas");
+c.width=w;c.height=h;
+c.getContext("2d").drawImage(img,0,0,w,h);
+c.toBlob(b=>res(b),"image/jpeg",0.85);
+};
+r.readAsDataURL(file);
+});
+}
+
+function saveImage(data){
+return new Promise(res=>{
+const tx=db.transaction("images","readwrite");
+tx.objectStore("images").put(data);
+tx.oncomplete=res;
+});
+}
+
+function getAll(){
+return new Promise(res=>{
+const tx=db.transaction("images","readonly");
+const req=tx.objectStore("images").getAll();
+req.onsuccess=e=>res(e.target.result);
+});
+}
+
+/* ====== FITUR HAPUS FOLDER ====== */
+
+async function deleteFolder(name){
+if(!confirm("Hapus folder & semua isinya?")) return;
+
+const data = await getAll();
+const tx = db.transaction("images","readwrite");
+const store = tx.objectStore("images");
+
+data.filter(d=>d.folder===name)
+.forEach(d=>store.delete(d.id));
+
+tx.oncomplete = showFolders;
+}
+
+$("#delFolder").onclick=()=>{
+if(currentFolder) deleteFolder(currentFolder);
+};
+
+/* ================================ */
+
+async function showFolders(){
+currentFolder=null;
+$("#back").style.display="none";
+$("#delFolder").style.display="none";
+
+const data=await getAll();
+const folders=[...new Set(data.map(d=>d.folder))];
+render(folders.map(f=>({type:"folder",name:f})));
+}
+
+async function openFolder(name){
+currentFolder=name;
+$("#back").style.display="inline";
+$("#delFolder").style.display="inline";
+
+const data=(await getAll()).filter(d=>d.folder===name);
+render(data.map(d=>({type:"img",...d})));
+}
+
+function render(items){
+const g=$("#gallery");
+g.className="grid";
+g.innerHTML="";
+
+items.forEach(it=>{
+if(it.type==="folder"){
+const div=document.createElement("div");
+div.className="folder";
+div.innerHTML=`
+${it.name}
+<div style="margin-top:8px">
+<button style="background:#ef4444"
+onclick="event.stopPropagation();deleteFolder('${it.name}')">🗑️</button>
+</div>`;
+div.onclick=()=>openFolder(it.name);
+g.appendChild(div);
+
+}else{
+const url=URL.createObjectURL(it.blob);
+const div=document.createElement("div");
+div.className="item";
+div.innerHTML=`
+<img src="${url}">
+${it.caption?`<div>${it.caption}</div>`:""}
+`;
+g.appendChild(div);
+}
+});
+}
+
+$("#back").onclick=showFolders;
+</script>
+
+</body>
+</html>
